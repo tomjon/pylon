@@ -107,10 +107,9 @@ class SetPredicate (Predicate):
     def set(self, key, value):
         self.values[key] = value
 
-    def eval(self, fact):
+    def eval(self, z):
         #FIXME you might want a version of eval that returns None instead of raising, but haven't needed it yet
         #FIXME in fact, could rename this __bool__ ;)
-        z = tuple(x() if isinstance(x, Variable) else x for x in fact)
         value = self.values.get(z)
         if value is None:
             raise DomainError(z)
@@ -186,7 +185,8 @@ class PredicateExpr (Expr):
         self.fact = fact
 
     def eval(self):
-        return self.p.eval(self.fact)
+        z = tuple(x() if isinstance(x, Variable) else x for x in self.fact)
+        return self.p.eval(z)
 
     def iter_domain(self):
         for _ in self.p.iter_domain(self.fact):
@@ -255,23 +255,22 @@ class FnPredicate (Predicate):
         self.f = f
         self.call_count = 0
 
-    def eval(self, fact):
+    def eval(self, z):
         self.call_count += 1
-        z = tuple(x() if isinstance(x, Variable) else x for x in fact)
         return self.f(*z)
 
 
-class RulePredicate (Predicate):
+class Rule:
     """ Truth function for defining a predicate as being 'iff' another:
         >>> Q = SetPredicate({ (1, 2): True, (3, 4): False, (1, 1): False, (2, 1): False })
-        >>> R = RulePredicate(lambda x: Q(1, x))   # so the domain/truth iterators for R's function defer to Q's function: whats your domain with a fixed? (Q|a)
+        >>> R = Rule(lambda x: Q(1, x))   #FIXME not done! so the domain/truth iterators for R's function defer to Q's function: whats your domain with a fixed? (Q|a)
         >>> bool(R(2)) # what about lambda x, y: Q(y, 1, x)
         True
         >>> bool(R(1))
         False
         >>> bool(R(1) | R(2))
         True
-        >>> S = RulePredicate(lambda x, y: Q(x, y) | Q(y, x))
+        >>> S = Rule(lambda x, y: Q(x, y) | Q(y, x))
         >>> bool(S(2, 1))
         True
         >>> bool(S(3, 4))
@@ -283,11 +282,24 @@ class RulePredicate (Predicate):
     def __init__(self, f):
         self.f = f
 
-    def eval(self, fact):
-        expr = self.f(*fact)
-        return expr.eval()
+    def __call__(self, *fact):
+        return RuleExpr(self.f(*fact))
 
-    #FIXME can presumably, at least is some cases, make an iter_domain that defers to the enclosed predicates
+
+class RuleExpr (Expr):
+
+    def __init__(self, expr):
+        self.expr = expr
+
+    def eval(self):
+        return self.expr.eval()
+
+    def iter_domain(self):
+        return
+        yield
+
+    def __repr__(self):
+        return "[Rule:%s]" % repr(self.fact)
 
 
 class Quantifier (Expr):
