@@ -84,7 +84,7 @@ class Predicate:
         return PredicateExpr(self, fact)
 
     def iter_domain(self, fact):
-        yield # if not overridden, indicates predicate can not enumerate domain
+        yield True # if not overridden, indicates predicate can not enumerate domain, and passes the current fact along
 
 
 class DomainError (Exception):
@@ -117,7 +117,6 @@ class SetPredicate (Predicate):
 
     def iter_domain(self, fact):
         # fact may contain Variables which must be enumerated over the domain
-        f = tuple(x for x in fact if isinstance(x, Variable) and x.is_free())
         for t in self.values:
             for x, v in zip(fact, t):
                 if isinstance(x, Variable):
@@ -128,11 +127,20 @@ class SetPredicate (Predicate):
                 elif x != v:
                     break
             else:
-                yield
-            # those free variables need to be free after we return, as well as at
-            # the start of each iteration
-            for x in f:
-                x.free()
+                yield True
+                continue
+            yield False
+
+
+class FnPredicate (Predicate):
+    """ A predicate which defines truth based on a function of the arguments.
+    """
+
+    def __init__(self, f):
+        self.f = f
+
+    def eval(self, z):
+        return self.f(*z)
 
 
 class Expr:
@@ -189,8 +197,12 @@ class PredicateExpr (Expr):
         return self.p.eval(z)
 
     def iter_domain(self):
-        for _ in self.p.iter_domain(self.fact):
-            yield
+        f = tuple(x for x in self.fact if isinstance(x, Variable) and x.is_free())
+        for v in self.p.iter_domain(self.fact):
+            if v:
+                yield
+            for x in f:
+                x.free()
 
     def __repr__(self):
         return "[%s]" % repr(self.fact)
@@ -220,8 +232,9 @@ class BinaryExpr (Expr):
         self.ops = ops
 
     def iter_domain(self):
+        #FIXME should choose the order based on difficulties and cope with NOPE
         for _ in self.e.iter_domain():
-            #FIXME should choose the order based on difficulties and cope with NOPE
+            #FIXME if self.e.fact now contains no free variables, we can evaluate it... store the evaluation on the expr itself?
             for __ in self.f.iter_domain():
                 yield
 
@@ -245,19 +258,6 @@ class OrExpr (BinaryExpr):
 
     def eval(self):
         return self.e.eval() or self.f.eval() # we should check for 'difficulty' here
-
-
-class FnPredicate (Predicate):
-    """ A predicate which defines truth based on a function of the arguments.
-    """
-
-    def __init__(self, f):
-        self.f = f
-        self.call_count = 0
-
-    def eval(self, z):
-        self.call_count += 1
-        return self.f(*z)
 
 
 class Rule:
@@ -362,17 +362,11 @@ class Exists (Quantifier):
         >>> T = FnPredicate(lambda x, y: x < y)
         >>> bool(Exists(lambda x: R(x) & T(x, 5)))
         True
-        >>> T.call_count
-        1
         >>> S = SetPredicate({ (7, ): True })
         >>> bool(Exists(lambda x, y: R(x) & T(x, y) & S(y)))
         True
-        >>> T.call_count # this isn't reset so just keeps increasing
-        2
         >>> bool(~Exists(lambda x, y: R(x) & T(x, y) & S(y)))
         False
-        >>> T.call_count
-        3
     """
     def __init__(self, f):
         super().__init__(f, True)
