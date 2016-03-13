@@ -191,10 +191,15 @@ class PredicateExpr (Expr):
     def __init__(self, p, fact):
         self.p = p # the Predicate
         self.fact = fact
+        self.values = {}
 
     def eval(self):
         z = tuple(x() if isinstance(x, Variable) else x for x in self.fact)
-        return self.p.eval(z)
+        if z in self.values:
+            return self.values[z]
+        v = self.p.eval(z)
+        self.values[z] = v
+        return v
 
     def iter_domain(self):
         f = tuple(x for x in self.fact if isinstance(x, Variable) and x.is_free())
@@ -303,12 +308,21 @@ class RuleExpr (Expr):
 
 
 class Quantifier (Expr):
+#FIXME is this quite right? Should expr (in __iter__) be stored on self? implications for caching values (the key should depend on the free variables (i.e. the ones not bound by the lambda function)
+#FIXME also, should the Exists/ForAll value ever be None (rather than True or False) - perhaps if the domain is empty??
 
     def __init__(self, f, value):
         self.f = f
-        self.value = value
+        self.value = value #FIXME this is not very well named
+        self.values = _free
 
     def eval(self):
+        #FIXME for now, just cache the single value
+        if self.values is _free:
+            self.values = self._eval()
+        return self.values
+
+    def _eval(self):
         for x in iter(self):
             return self.value
         return not self.value
