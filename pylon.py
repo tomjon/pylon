@@ -100,8 +100,9 @@ class SetPredicate (Predicate):
     """ A predicate defined by a set of true/false values.
     """
 
-    def __init__(self, values={}):
+    def __init__(self, values={}, name=None):
         Predicate.__init__(self)
+        self.name = name
         self.values = dict((k if isinstance(k, tuple) else (k,), v) for k, v in values.items())
 
     def set(self, key, value):
@@ -136,16 +137,21 @@ class FnPredicate (Predicate):
     """ A predicate which defines truth based on a function of the arguments.
     """
 
-    def __init__(self, f):
+    def __init__(self, f, name=None):
         self.f = f
+        self.name = name
 
     def eval(self, z):
         return self.f(*z)
 
 
 class Expr:
-    """ Root class for expression trees (formed by operators and predicates).
+    """ Base class for expressions.
     """
+
+    def __init__(self, name=None):
+        self.collector = None
+        self.name = name # FIXME might not be right to declare name here
 
     def __invert__(self):
         return NegExpr(self)
@@ -158,6 +164,15 @@ class Expr:
 
     def __bool__(self):
         return self.eval()
+
+    def collect(self, collector):
+        self.collector = collector
+        return self
+
+    def __repr__(self):
+        if self.name is not None:
+            return self.name
+        return "{0}@{1}".format(self.__class__.__name__, id(self))
 
 
 class PredicateExpr (Expr):
@@ -189,33 +204,44 @@ class PredicateExpr (Expr):
     """
 
     def __init__(self, p, fact):
+        super().__init__(p.name)
         self.p = p # the Predicate
         self.fact = fact
         self.values = {}
 
     def eval(self):
         z = tuple(x() if isinstance(x, Variable) else x for x in self.fact)
-        if z in self.values:
-            return self.values[z]
-        v = self.p.eval(z)
-        self.values[z] = v
+        cached = z in self.values
+        if cached:
+            v = self.values[z]
+        else:
+            v = self.p.eval(z)
+            self.values[z] = v
+        if self.collector is not None:
+            self.collector.eval(self, z, v, cached)
         return v
 
     def iter_domain(self):
         f = tuple(x for x in self.fact if isinstance(x, Variable) and x.is_free())
         for v in self.p.iter_domain(self.fact):
-            if v:
+            if v is True:
+                if self.collector is not None:
+                    self.collector.domain(self, self.fact)
                 yield
             for x in f:
                 x.free()
 
-    def __repr__(self):
-        return "[%s]" % repr(self.fact)
+    def is_free(self):
+        for x in self.fact:
+            if isinstance(x, Variable) and x.is_free():
+                return True
+        return False
 
 
 class NegExpr (Expr):
 
     def __init__(self, e):
+        super().__init__()
         self.e = e
 
     def eval(self):
@@ -225,32 +251,71 @@ class NegExpr (Expr):
         for _ in self.e.iter_domain():
             yield
 
+    def collect(self, collector):
+        super().collect(collector)
+        self.e.collect(collector)
+
+    def is_free(self):
+        return self.e.is_free()
+
     def __repr__(self):
-        return "~%s" % self.e
+        if self.e.name is not None:
+            return "~{0}".format(self.e.name)
+        return super().__repr__()
 
 
 class BinaryExpr (Expr):
 
-    def __init__(self, e, f, ops):
+    def __init__(self, e, f):
+        super().__init__()
         self.e = e
         self.f = f
-        self.ops = ops
 
     def iter_domain(self):
+        """ Short circuiting.
+        
+            >>> P = SetPredicate({'foo': True, 'bar': False}, name="P")
+            >>> Q = SetPredicate({'A': True, 'B': True}, name="Q")
+            >>> debug(Exists(lambda x, y: P(x) & Q(y)))
+            ([foo]) in P
+            P(foo) = True
+            ([A]) in Q
+            P(foo) = True [cached]
+            Q(A) = True
+            ('foo', 'A')
+            ([B]) in Q
+            P(foo) = True [cached]
+            Q(B) = True
+            ('foo', 'B')
+            ([bar]) in P
+            P(bar) = False
+        """
         #FIXME should choose the order based on difficulties and cope with NOPE
         for _ in self.e.iter_domain():
-            #FIXME if self.e.fact now contains no free variables, we can evaluate it... store the evaluation on the expr itself?
+            if not self.e.is_free():
+                v = self.e.eval()
+                if self.short(v):
+                    continue
             for __ in self.f.iter_domain():
                 yield
 
-    def __repr__(self):
-        return "%s %s %s" % (self.e, self.ops, self.f)
+    def is_free(self):
+        return self.e.is_free() or self.f.is_free()
+
+    def collect(self, collector):
+        super().collect(collector)
+        self.e.collect(collector)
+        self.f.collect(collector)
 
 
 class AndExpr (BinaryExpr):
 
     def __init__(self, e, f):
-        BinaryExpr.__init__(self, e, f, "&")
+        BinaryExpr.__init__(self, e, f)
+
+    def short(self, v):
+        #FIXME will need more information that just v if we are to start asking for difficulties and changing the order...
+        return not v
 
     def eval(self):
         return self.e.eval() and self.f.eval() # we should check for 'difficulty' here
@@ -259,7 +324,11 @@ class AndExpr (BinaryExpr):
 class OrExpr (BinaryExpr):
 
     def __init__(self, e, f):
-        BinaryExpr.__init__(self, e, f, "|")
+        BinaryExpr.__init__(self, e, f)
+
+    def short(self, v):
+        #FIXME will need more information that just v if we are to start asking for difficulties and changing the order...
+        return v
 
     def eval(self):
         return self.e.eval() or self.f.eval() # we should check for 'difficulty' here
@@ -294,6 +363,7 @@ class Rule:
 class RuleExpr (Expr):
 
     def __init__(self, expr):
+        super().__init__()
         self.expr = expr
 
     def eval(self):
@@ -303,16 +373,24 @@ class RuleExpr (Expr):
         return
         yield
 
+    def collect(self, collector):
+        super().collect(collector)
+        self.expr.collect(collector)
+
+    def is_free(self):
+        return self.expr.is_free()
+
     def __repr__(self):
         return "[Rule:%s]" % repr(self.fact)
 
 
 class Quantifier (Expr):
-#FIXME is this quite right? Should expr (in __iter__) be stored on self? implications for caching values (the key should depend on the free variables (i.e. the ones not bound by the lambda function)
-#FIXME also, should the Exists/ForAll value ever be None (rather than True or False) - perhaps if the domain is empty??
+#FIXME ... caching values (the key should depend on the free variables (i.e. the ones not bound by the lambda function) shouldn't self.expr be cached? here
 
     def __init__(self, f, value):
-        self.f = f
+        super().__init__()
+        self.fact = tuple(Variable() for _ in range(len(inspect.getargspec(f).args)))
+        self.expr = f(*self.fact)
         self.value = value #FIXME this is not very well named
         self.values = _free
 
@@ -328,11 +406,15 @@ class Quantifier (Expr):
         return not self.value
 
     def __iter__(self):
-        v = tuple(Variable() for _ in range(len(inspect.getargspec(self.f).args)))
-        expr = self.f(*v)
-        for _ in expr.iter_domain():
-            if not self.value ^ expr.eval(): # xor
-                yield tuple(x() if isinstance(x, Variable) else x for x in v)
+        for x in self.fact:
+            x.free()
+        for _ in self.expr.iter_domain():
+            if not self.value ^ self.expr.eval(): # xor
+                yield tuple(x() if isinstance(x, Variable) else x for x in self.fact)
+
+    def collect(self, collector):
+        super().collect(collector)
+        self.expr.collect(collector)
 
 
 class Exists (Quantifier):
@@ -396,6 +478,25 @@ class All (Quantifier):
     """
     def __init__(self, f):
         super().__init__(f, False)
+
+
+class Collector:
+
+    def eval(self, expr, z, v, cached):
+        print("{0}({1}) = {2}{3}".format(expr, ','.join(z), v, ' [cached]' if cached else ''))
+
+    def domain(self, expr, fact):
+        print("({1}) in {0}".format(expr, ','.join(str(x) for x in fact)))
+
+
+def debug(expr):
+    c = Collector()
+    expr.collect(c)
+    if isinstance(expr, Quantifier):
+        for _ in expr:
+            print(_)
+    else:
+        print(bool(expr))
 
 
 if __name__ == '__main__':
