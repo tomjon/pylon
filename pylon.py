@@ -26,6 +26,7 @@
 # for example x > y
 
 import inspect
+from collections import OrderedDict
 
 
 class Sentinel:
@@ -103,7 +104,8 @@ class SetPredicate (Predicate):
     def __init__(self, values={}, name=None):
         Predicate.__init__(self)
         self.name = name
-        self.values = dict((k if isinstance(k, tuple) else (k,), v) for k, v in values.items())
+        items = [(k if isinstance(k, tuple) else (k,), v) for k, v in values.items()]
+        self.values = OrderedDict(sorted(items, key=lambda t: t[0]))
 
     def set(self, key, value):
         self.values[key] = value
@@ -277,6 +279,8 @@ class BinaryExpr (Expr):
             >>> P = SetPredicate({'foo': True, 'bar': False}, name="P")
             >>> Q = SetPredicate({'A': True, 'B': True}, name="Q")
             >>> debug(Exists(lambda x, y: P(x) & Q(y)))
+            ([bar]) in P
+            P(bar) = False
             ([foo]) in P
             P(foo) = True
             ([A]) in Q
@@ -287,8 +291,6 @@ class BinaryExpr (Expr):
             P(foo) = True [cached]
             Q(B) = True
             ('foo', 'B')
-            ([bar]) in P
-            P(bar) = False
         """
         #FIXME should choose the order based on difficulties and cope with NOPE
         for _ in self.e.iter_domain():
@@ -387,11 +389,11 @@ class RuleExpr (Expr):
 class Quantifier (Expr):
 #FIXME ... caching values (the key should depend on the free variables (i.e. the ones not bound by the lambda function) shouldn't self.expr be cached? here
 
-    def __init__(self, f, value):
+    def __init__(self, f, op):
         super().__init__()
         self.fact = tuple(Variable() for _ in range(len(inspect.getargspec(f).args)))
         self.expr = f(*self.fact)
-        self.value = value #FIXME this is not very well named
+        self.op = op
         self.values = _free
 
     def eval(self):
@@ -402,14 +404,14 @@ class Quantifier (Expr):
 
     def _eval(self):
         for x in iter(self):
-            return self.value
-        return not self.value
+            return self.op
+        return not self.op
 
     def __iter__(self):
         for x in self.fact:
             x.free()
         for _ in self.expr.iter_domain():
-            if not self.value ^ self.expr.eval(): # xor
+            if not self.op ^ self.expr.eval(): # xor
                 yield tuple(x() if isinstance(x, Variable) else x for x in self.fact)
 
     def collect(self, collector):
@@ -430,13 +432,13 @@ class Exists (Quantifier):
         (1,)
         (2,)
         >>> for fact in Exists(lambda x, y: Q(x, x) & Q(x, y)): print(fact)
-        (1, 2)
         (1, 1)
+        (1, 2)
         (2, 1)
         (2, 2)
         >>> for fact in Exists(lambda x, y: Q(x, y) & Q(y, x)): print(fact)
-        (1, 2)
         (1, 1)
+        (1, 2)
         (2, 1)
         (2, 2)
         >>> bool(Exists(lambda x: ~Q(9, x)))
