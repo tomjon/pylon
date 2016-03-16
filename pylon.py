@@ -34,7 +34,7 @@ class Sentinel:
     def __init__(self, name):
         self.name = name
 
-    def __str__(self):
+    def __repr__(self):
         return "@{0}".format(self.name)
 
 
@@ -278,7 +278,7 @@ class BinaryExpr (Expr):
         
             >>> P = SetPredicate({'foo': True, 'bar': False}, name="P")
             >>> Q = SetPredicate({'A': True, 'B': True}, name="Q")
-            >>> debug(Exists(lambda x, y: P(x) & Q(y)))
+            >>> debug(Exists(lambda x, y: P(x) & Q(y), name="E"))
             ([bar]) in P
             P(bar) = False
             ([foo]) in P
@@ -286,11 +286,13 @@ class BinaryExpr (Expr):
             ([A]) in Q
             P(foo) = True [cached]
             Q(A) = True
-            ('foo', 'A')
+            E => ('foo', 'A')
             ([B]) in Q
             P(foo) = True [cached]
             Q(B) = True
-            ('foo', 'B')
+            E => ('foo', 'B')
+            E = True
+            Evaluates to True
         """
         #FIXME should choose the order based on difficulties and cope with NOPE
         for _ in self.e.iter_domain():
@@ -388,13 +390,20 @@ class RuleExpr (Expr):
 
 class Quantifier (Expr):
 #FIXME ... caching values (the key should depend on the free variables (i.e. the ones not bound by the lambda function) shouldn't self.expr be cached? here
+    """ Caching needs to be mindful of variables from outside the lambda:
+    
+        >>> P = SetPredicate({ "A": True, "B": True }, name="P")
+        >>> Q = SetPredicate({ "a": True, "b": True }, name="Q")
+        >>> debug(Exists(lambda x: Exists(lambda y: P(x) & Q(y), name="Inner"), name="Outer"))
+    """
 
-    def __init__(self, f, op):
+    def __init__(self, f, op, name):
         super().__init__()
         self.fact = tuple(Variable() for _ in range(len(inspect.getargspec(f).args)))
         self.expr = f(*self.fact)
         self.op = op
         self.values = _free
+        self.name = name
 
     def eval(self):
         #FIXME for now, just cache the single value
@@ -403,16 +412,28 @@ class Quantifier (Expr):
         return self.values
 
     def _eval(self):
-        for x in iter(self):
-            return self.op
-        return not self.op
+        v = not self.op
+        for x in self._iter():
+            if self.collector is not None:
+                self.collector.quantifier_value(self, x)
+            v = self.op
+            if self.collector is None or self.collector.quantifier_short():
+                break
+        if self.collector is not None:
+            self.collector.quantifier(self, v)
+        return v
 
-    def __iter__(self):
+    def _iter(self):
         for x in self.fact:
             x.free()
         for _ in self.expr.iter_domain():
             if not self.op ^ self.expr.eval(): # xor
                 yield tuple(x() if isinstance(x, Variable) else x for x in self.fact)
+
+    #FIXME is there a more specific domain?
+    def iter_domain(self):
+        yield
+        return
 
     def collect(self, collector):
         super().collect(collector)
@@ -421,40 +442,110 @@ class Quantifier (Expr):
 
 class Exists (Quantifier):
     """ Existence quantifier "there exists".
-        >>> Q = SetPredicate({ (1, 2): True, (3, 4): False, (1, 1): True, (2, 1): True, (2, 2): True })
+        >>> Q = SetPredicate({ (1, 2): True, (3, 4): False, (1, 1): True, (2, 1): True, (2, 2): True }, name="Q")
         >>> bool(Exists(lambda x: Q(x, 2)))
         True
         >>> bool(Exists(lambda x: Q(x, 6)))
         False
         >>> bool(Exists(lambda x: Q(3, x)))
         False
-        >>> for fact in Exists(lambda x: Q(x, x)): print(fact)
-        (1,)
-        (2,)
-        >>> for fact in Exists(lambda x, y: Q(x, x) & Q(x, y)): print(fact)
-        (1, 1)
-        (1, 2)
-        (2, 1)
-        (2, 2)
-        >>> for fact in Exists(lambda x, y: Q(x, y) & Q(y, x)): print(fact)
-        (1, 1)
-        (1, 2)
-        (2, 1)
-        (2, 2)
+        >>> debug(Exists(lambda x: Q(x, x), name="E"))
+        ([1],[1]) in Q
+        Q(1,1) = True
+        E => (1,)
+        ([2],[2]) in Q
+        Q(2,2) = True
+        E => (2,)
+        E = True
+        Evaluates to True
+        >>> debug(Exists(lambda x, y: Q(x, x) & Q(x, y), name="E"))
+        ([1],[1]) in Q
+        Q(1,1) = True
+        ([1],[1]) in Q
+        Q(1,1) = True [cached]
+        Q(1,1) = True
+        E => (1, 1)
+        ([1],[2]) in Q
+        Q(1,1) = True [cached]
+        Q(1,2) = True
+        E => (1, 2)
+        ([2],[2]) in Q
+        Q(2,2) = True
+        ([2],[1]) in Q
+        Q(2,2) = True [cached]
+        Q(2,1) = True
+        E => (2, 1)
+        ([2],[2]) in Q
+        Q(2,2) = True [cached]
+        Q(2,2) = True
+        E => (2, 2)
+        E = True
+        Evaluates to True
+        >>> debug(Exists(lambda x, y: Q(x, y) & Q(y, x), name="E")) #FIMXE is caching working as expected, below?
+        ([1],[1]) in Q
+        Q(1,1) = True
+        ([1],[1]) in Q
+        Q(1,1) = True [cached]
+        Q(1,1) = True
+        E => (1, 1)
+        ([1],[2]) in Q
+        Q(1,2) = True
+        ([2],[1]) in Q
+        Q(1,2) = True [cached]
+        Q(2,1) = True
+        E => (1, 2)
+        ([2],[1]) in Q
+        Q(2,1) = True
+        ([1],[2]) in Q
+        Q(2,1) = True [cached]
+        Q(1,2) = True
+        E => (2, 1)
+        ([2],[2]) in Q
+        Q(2,2) = True
+        ([2],[2]) in Q
+        Q(2,2) = True [cached]
+        Q(2,2) = True
+        E => (2, 2)
+        ([3],[4]) in Q
+        Q(3,4) = False
+        E = True
+        Evaluates to True
         >>> bool(Exists(lambda x: ~Q(9, x)))
         False
-        >>> for fact in Exists(lambda x: ~Q(3, x)): print(fact)
-        (4,)
+        >>> debug(Exists(lambda x: ~Q(3, x), name="E"))
+        (3,[4]) in Q
+        Q(3,4) = False
+        E => (4,)
+        E = True
+        Evaluates to True
         >>> bool(Exists(lambda x: Q(x, 2)) & ~Exists(lambda x: Q(x, 6)))
         True
         
-        >>> R = SetPredicate({ (0, ): True, (1, ): True })
-        >>> for fact in Exists(lambda x, y: R(x) & R(y)): print(fact)
-        (0, 0)
-        (0, 1)
-        (1, 0)
-        (1, 1)
-        
+        >>> R = SetPredicate({ (0, ): True, (1, ): True }, name="R")
+        >>> debug(Exists(lambda x, y: R(x) & R(y), name="E"))
+        ([0]) in R
+        R(0) = True
+        ([0]) in R
+        R(0) = True [cached]
+        R(0) = True
+        E => (0, 0)
+        ([1]) in R
+        R(0) = True [cached]
+        R(1) = True
+        E => (0, 1)
+        ([1]) in R
+        R(1) = True
+        ([0]) in R
+        R(1) = True [cached]
+        R(0) = True [cached]
+        E => (1, 0)
+        ([1]) in R
+        R(1) = True [cached]
+        R(1) = True [cached]
+        E => (1, 1)
+        E = True
+        Evaluates to True
+
         Predicates can refuse the iter_domain() call.
         >>> R = SetPredicate({ (4, ): True })
         >>> T = FnPredicate(lambda x, y: x < y)
@@ -466,8 +557,8 @@ class Exists (Quantifier):
         >>> bool(~Exists(lambda x, y: R(x) & T(x, y) & S(y)))
         False
     """
-    def __init__(self, f):
-        super().__init__(f, True)
+    def __init__(self, f, name=None):
+        super().__init__(f, True, name)
 
 
 class All (Quantifier):
@@ -478,27 +569,32 @@ class All (Quantifier):
         >>> bool(All(lambda x: Q(3, x)))
         False
     """
-    def __init__(self, f):
-        super().__init__(f, False)
+    def __init__(self, f, name=None):
+        super().__init__(f, False, name)
 
 
 class Collector:
 
     def eval(self, expr, z, v, cached):
-        print("{0}({1}) = {2}{3}".format(expr, ','.join(z), v, ' [cached]' if cached else ''))
+        print("{0}({1}) = {2}{3}".format(expr, ','.join(str(x) for x in z), v, ' [cached]' if cached else ''))
 
     def domain(self, expr, fact):
         print("({1}) in {0}".format(expr, ','.join(str(x) for x in fact)))
+
+    def quantifier_short(self):
+        return False
+
+    def quantifier_value(self, expr, x):
+        print("{0} => {1}".format(expr, x))
+
+    def quantifier(self, expr, v):
+        print("{0} = {1}".format(expr, v))
 
 
 def debug(expr):
     c = Collector()
     expr.collect(c)
-    if isinstance(expr, Quantifier):
-        for _ in expr:
-            print(_)
-    else:
-        print(bool(expr))
+    print("Evaluates to", bool(expr))
 
 
 if __name__ == '__main__':
