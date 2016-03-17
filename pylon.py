@@ -111,8 +111,6 @@ class SetPredicate (Predicate):
         self.values[key] = value
 
     def eval(self, z):
-        #FIXME you might want a version of eval that returns None instead of raising, but haven't needed it yet
-        #FIXME in fact, could rename this __bool__ ;)
         value = self.values.get(z)
         if value is None:
             raise DomainError(z)
@@ -153,7 +151,7 @@ class Expr:
 
     def __init__(self, name=None):
         self.collector = None
-        self.name = name # FIXME might not be right to declare name here
+        self.name = name
 
     def __invert__(self):
         return NegExpr(self)
@@ -349,10 +347,10 @@ class OrExpr (BinaryExpr):
 
 
 class Rule:
-    """ Truth function for defining a predicate as being 'iff' another:
+    """ Truth function for defining a predicate in terms of an expression:
         >>> Q = SetPredicate({ (1, 2): True, (3, 4): False, (1, 1): False, (2, 1): False })
-        >>> R = Rule(lambda x: Q(1, x))   #FIXME not done! so the domain/truth iterators for R's function defer to Q's function: whats your domain with a fixed? (Q|a)
-        >>> bool(R(2)) # what about lambda x, y: Q(y, 1, x)
+        >>> R = Rule(lambda x: Q(1, x))
+        >>> bool(R(2))
         True
         >>> bool(R(1))
         False
