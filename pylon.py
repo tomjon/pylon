@@ -241,6 +241,18 @@ class PredicateExpr (Expr):
 
 
 class NegExpr (Expr):
+    """ So for example:
+    
+        >>> P = SetPredicate({ 'foo': False, 'bar': True }, name="P")
+        >>> debug(Exists(lambda x: ~P(x), name="E"))
+        ([bar]) in P
+        P(bar) = True
+        ([foo]) in P
+        P(foo) = False
+        E => ('foo',)
+        E = True
+        Evaluates to True
+    """
 
     def __init__(self, e):
         super().__init__()
@@ -390,11 +402,73 @@ class RuleExpr (Expr):
 
 class Quantifier (Expr):
 #FIXME ... caching values (the key should depend on the free variables (i.e. the ones not bound by the lambda function) shouldn't self.expr be cached? here
-    """ Caching needs to be mindful of variables from outside the lambda:
+    """ For example:
     
         >>> P = SetPredicate({ "A": True, "B": True }, name="P")
+        >>> debug(Exists(lambda x: P(x), name="E"))
+        ([A]) in P
+        P(A) = True
+        E => ('A',)
+        ([B]) in P
+        P(B) = True
+        E => ('B',)
+        E = True
+        Evaluates to True
+
+        Caching needs to be mindful of variables from outside the lambda:
+    
         >>> Q = SetPredicate({ "a": True, "b": True }, name="Q")
-        >>> debug(Exists(lambda x: Exists(lambda y: P(x) & Q(y), name="Inner"), name="Outer"))
+        >>> debug(Exists(lambda x: Exists(lambda y: P(x) & Q(y), name="Inner"), name="Outer")) #FIXME why is the outer iter_domain twice?
+        ([A]) in P
+        P(A) = True
+        ([a]) in Q
+        P(A) = True [cached]
+        Q(a) = True
+        ([A]) in P
+        P(A) = True [cached]
+        ([a]) in Q
+        P(A) = True [cached]
+        Q(a) = True [cached]
+        Inner => ('a',)
+        Inner = True
+        Outer => ('A',)
+        ([b]) in Q
+        P(A) = True [cached]
+        Q(b) = True
+        ([A]) in P
+        P(A) = True [cached]
+        ([b]) in Q
+        P(A) = True [cached]
+        Q(b) = True [cached]
+        Inner => ('b',)
+        Inner = True
+        Outer => ('A',)
+        ([B]) in P
+        P(B) = True
+        ([a]) in Q
+        P(B) = True [cached]
+        Q(a) = True [cached]
+        ([B]) in P
+        P(B) = True [cached]
+        ([a]) in Q
+        P(B) = True [cached]
+        Q(a) = True [cached]
+        Inner => ('a',)
+        Inner = True
+        Outer => ('B',)
+        ([b]) in Q
+        P(B) = True [cached]
+        Q(b) = True [cached]
+        ([B]) in P
+        P(B) = True [cached]
+        ([b]) in Q
+        P(B) = True [cached]
+        Q(b) = True [cached]
+        Inner => ('b',)
+        Inner = True
+        Outer => ('B',)
+        Outer = True
+        Evaluates to True
     """
 
     def __init__(self, f, op, name):
@@ -407,13 +481,14 @@ class Quantifier (Expr):
 
     def eval(self):
         #FIXME for now, just cache the single value
-        if self.values is _free:
-            self.values = self._eval()
-        return self.values
+        #if self.values is _free:
+        #    self.values = self._eval()
+        #return self.values
+        return self._eval()
 
     def _eval(self):
         v = not self.op
-        for x in self._iter():
+        for x in self.iter_domain():
             if self.collector is not None:
                 self.collector.quantifier_value(self, x)
             v = self.op
@@ -423,17 +498,10 @@ class Quantifier (Expr):
             self.collector.quantifier(self, v)
         return v
 
-    def _iter(self):
-        for x in self.fact:
-            x.free()
+    def iter_domain(self):
         for _ in self.expr.iter_domain():
             if not self.op ^ self.expr.eval(): # xor
                 yield tuple(x() if isinstance(x, Variable) else x for x in self.fact)
-
-    #FIXME is there a more specific domain?
-    def iter_domain(self):
-        yield
-        return
 
     def collect(self, collector):
         super().collect(collector)
