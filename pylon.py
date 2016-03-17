@@ -414,7 +414,7 @@ class Quantifier (Expr):
         Caching needs to be mindful of variables from outside the lambda:
     
         >>> Q = SetPredicate({ "a": True, "b": True }, name="Q")
-        >>> debug(Exists(lambda x: Exists(lambda y: P(x) & Q(y), name="Inner"), name="Outer")) #FIXME why is the outer iter_domain twice?
+        >>> debug(Exists(lambda x: Exists(lambda y: P(x) & Q(y), name="Inner"), name="Outer"))
         ([A]) in P
         P(A) = True
         ([a]) in Q
@@ -601,6 +601,21 @@ class All (Quantifier):
         True
         >>> bool(All(lambda x: Q(3, x)))
         False
+        
+        For All as Predicate.
+        >>> P = SetPredicate({ (1, 2): True, (3, 4): True, (1, 1): True, (2, 1): True, (2, 2): True }, name="P")
+        >>> debug(All(lambda x: All(lambda y: P(x, y), name="Inner"), name="Outer"))
+        ([1],[1]) in P
+        P(1,1) = True
+        ([1],[2]) in P
+        P(1,2) = True
+        ([2],[1]) in P
+        P(2,1) = True
+        ([2],[2]) in P
+        P(2,2) = True
+        ([3],[4]) in P
+        P(3,4) = True
+        Evaluates to True
     """
     def __init__(self, f, name=None):
         super().__init__(f, False, name)
