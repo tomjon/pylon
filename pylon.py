@@ -250,7 +250,6 @@ class NegExpr (Expr):
         ([foo]) in P
         P(foo) = False
         E => ('foo',)
-        E = True
         Evaluates to True
     """
 
@@ -303,7 +302,6 @@ class BinaryExpr (Expr):
             P(foo) = True [cached]
             Q(B) = True
             E => ('foo', 'B')
-            E = True
             Evaluates to True
         """
         #FIXME should choose the order based on difficulties and cope with NOPE
@@ -401,7 +399,6 @@ class RuleExpr (Expr):
 
 
 class Quantifier (Expr):
-#FIXME ... caching values (the key should depend on the free variables (i.e. the ones not bound by the lambda function) shouldn't self.expr be cached? here
     """ For example:
     
         >>> P = SetPredicate({ "A": True, "B": True }, name="P")
@@ -412,7 +409,6 @@ class Quantifier (Expr):
         ([B]) in P
         P(B) = True
         E => ('B',)
-        E = True
         Evaluates to True
 
         Caching needs to be mindful of variables from outside the lambda:
@@ -424,50 +420,25 @@ class Quantifier (Expr):
         ([a]) in Q
         P(A) = True [cached]
         Q(a) = True
-        ([A]) in P
-        P(A) = True [cached]
-        ([a]) in Q
-        P(A) = True [cached]
-        Q(a) = True [cached]
         Inner => ('a',)
-        Inner = True
         Outer => ('A',)
         ([b]) in Q
         P(A) = True [cached]
         Q(b) = True
-        ([A]) in P
-        P(A) = True [cached]
-        ([b]) in Q
-        P(A) = True [cached]
-        Q(b) = True [cached]
         Inner => ('b',)
-        Inner = True
         Outer => ('A',)
         ([B]) in P
         P(B) = True
         ([a]) in Q
         P(B) = True [cached]
         Q(a) = True [cached]
-        ([B]) in P
-        P(B) = True [cached]
-        ([a]) in Q
-        P(B) = True [cached]
-        Q(a) = True [cached]
         Inner => ('a',)
-        Inner = True
         Outer => ('B',)
-        ([b]) in Q
-        P(B) = True [cached]
-        Q(b) = True [cached]
-        ([B]) in P
-        P(B) = True [cached]
         ([b]) in Q
         P(B) = True [cached]
         Q(b) = True [cached]
         Inner => ('b',)
-        Inner = True
         Outer => ('B',)
-        Outer = True
         Evaluates to True
     """
 
@@ -476,32 +447,31 @@ class Quantifier (Expr):
         self.fact = tuple(Variable() for _ in range(len(inspect.getargspec(f).args)))
         self.expr = f(*self.fact)
         self.op = op
-        self.values = _free
+        self.values = {}
         self.name = name
 
     def eval(self):
-        #FIXME for now, just cache the single value
-        #if self.values is _free:
-        #    self.values = self._eval()
-        #return self.values
+        z = tuple(x() if isinstance(x, Variable) else x for x in self.fact)
+        if z in self.values:
+            return self.values[z]
         return self._eval()
 
     def _eval(self):
         v = not self.op
         for x in self.iter_domain():
-            if self.collector is not None:
-                self.collector.quantifier_value(self, x)
             v = self.op
             if self.collector is None or self.collector.quantifier_short():
                 break
-        if self.collector is not None:
-            self.collector.quantifier(self, v)
         return v
 
     def iter_domain(self):
         for _ in self.expr.iter_domain():
             if not self.op ^ self.expr.eval(): # xor
-                yield tuple(x() if isinstance(x, Variable) else x for x in self.fact)
+                z = tuple(x() if isinstance(x, Variable) else x for x in self.fact)
+                self.values[z] = self.op
+                if self.collector is not None:
+                    self.collector.quantifier_value(self, z)
+                yield z
 
     def collect(self, collector):
         super().collect(collector)
@@ -524,7 +494,6 @@ class Exists (Quantifier):
         ([2],[2]) in Q
         Q(2,2) = True
         E => (2,)
-        E = True
         Evaluates to True
         >>> debug(Exists(lambda x, y: Q(x, x) & Q(x, y), name="E"))
         ([1],[1]) in Q
@@ -547,7 +516,6 @@ class Exists (Quantifier):
         Q(2,2) = True [cached]
         Q(2,2) = True
         E => (2, 2)
-        E = True
         Evaluates to True
         >>> debug(Exists(lambda x, y: Q(x, y) & Q(y, x), name="E")) #FIMXE is caching working as expected, below?
         ([1],[1]) in Q
@@ -576,7 +544,6 @@ class Exists (Quantifier):
         E => (2, 2)
         ([3],[4]) in Q
         Q(3,4) = False
-        E = True
         Evaluates to True
         >>> bool(Exists(lambda x: ~Q(9, x)))
         False
@@ -584,7 +551,6 @@ class Exists (Quantifier):
         (3,[4]) in Q
         Q(3,4) = False
         E => (4,)
-        E = True
         Evaluates to True
         >>> bool(Exists(lambda x: Q(x, 2)) & ~Exists(lambda x: Q(x, 6)))
         True
@@ -611,7 +577,6 @@ class Exists (Quantifier):
         R(1) = True [cached]
         R(1) = True [cached]
         E => (1, 1)
-        E = True
         Evaluates to True
 
         Predicates can refuse the iter_domain() call.
@@ -654,9 +619,6 @@ class Collector:
 
     def quantifier_value(self, expr, x):
         print("{0} => {1}".format(expr, x))
-
-    def quantifier(self, expr, v):
-        print("{0} = {1}".format(expr, v))
 
 
 def debug(expr):
