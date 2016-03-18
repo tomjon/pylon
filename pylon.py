@@ -85,8 +85,8 @@ class Predicate:
         free or bound Variables.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, name=None):
+        self.name = name
 
     def __call__(self, *fact):
         return PredicateExpr(self, fact)
@@ -211,7 +211,7 @@ class PredicateExpr (Expr):
     """
 
     def __init__(self, p, fact):
-        super().__init__(getattr(p, 'name', None))
+        super().__init__(p.name)
         self.p = p # the Predicate
         self.fact = fact
         self.values = {}
