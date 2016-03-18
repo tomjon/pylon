@@ -7,10 +7,7 @@
 # where W(x) iff x is a (real) word
 #   and A(x, y) iff x is an anagram of y
 
-# Solution: iterate True elements of the domain of A, and check W
-# ??The domain of A is all words.?? If you have A(x,y) then y is an 'init parameter' of A(x)
-
-# Second example (yeah not a very good one, but perhaps instructive):
+# Second example:
 #
 # Exists(x) s.t. W(x) and A(x, y) and W(y)
 
@@ -24,6 +21,16 @@
 #   3. fine, you can't do either of those, so evaluate P(x1), P(x2), ..
 # For example a Predicate with Real domain might not be able to do 1 or 2, just 3 by evaluating
 # for example x > y
+
+# IsAWord predicate does (1), (2) inefficiently but is ok at (3)
+# x > y doesn't do (1), (2) at all but does (3)
+
+# TODO:
+#
+# 1. 'Difficulty' API
+# 2a. On top of (1), stop doing iter_domain when it gets too difficult/too far, restart later
+# 2b. Or instead of (1), pause doing iter_domain when it gets far enough, do eval() of rest of expr, restart later
+# 3. Implement iter_domain(true/false only) [caches on the expr?]
 
 import inspect
 from collections import OrderedDict
@@ -204,7 +211,7 @@ class PredicateExpr (Expr):
     """
 
     def __init__(self, p, fact):
-        super().__init__(p.name)
+        super().__init__(getattr(p, 'name', None))
         self.p = p # the Predicate
         self.fact = fact
         self.values = {}
@@ -621,21 +628,27 @@ class All (Quantifier):
 
 class Collector:
 
+    def __init__(self, filter=None):
+        self.filter = filter
+
     def eval(self, expr, z, v, cached):
-        print("{0}({1}) = {2}{3}".format(expr, ','.join(str(x) for x in z), v, ' [cached]' if cached else ''))
+        if self.filter is None or expr.name in self.filter:
+            print("{0}({1}) = {2}{3}".format(expr, ','.join(str(x) for x in z), v, ' [cached]' if cached else ''))
 
     def domain(self, expr, fact):
-        print("({1}) in {0}".format(expr, ','.join(str(x) for x in fact)))
+        if self.filter is None or expr.name in self.filter:
+            print("({1}) in {0}".format(expr, ','.join(str(x) for x in fact)))
 
     def quantifier_short(self):
         return False
 
     def quantifier_value(self, expr, x):
-        print("{0} => {1}".format(expr, x))
+        if self.filter is None or expr.name in self.filter:
+            print("{0} => {1}".format(expr, x))
 
 
-def debug(expr):
-    c = Collector()
+def debug(expr, filter=None):
+    c = Collector(filter)
     expr.collect(c)
     print("Evaluates to", bool(expr))
 
