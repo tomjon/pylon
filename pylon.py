@@ -31,6 +31,12 @@
 # 2a. On top of (1), stop doing iter_domain when it gets too difficult/too far, restart later
 # 2b. Or instead of (1), pause doing iter_domain when it gets far enough, do eval() of rest of expr, restart later
 # 3. Implement iter_domain(true/false only) [caches on the expr?]
+#
+# These might need or imply:
+#
+# 4. Global value cache (rather than per-expression) that you can then control (maybe)
+# 5. Is shorting inside the iter_domain() loop correct?
+
 
 import inspect
 from collections import OrderedDict
@@ -317,6 +323,14 @@ class BinaryExpr (Expr):
                     continue
             for __ in self.f.iter_domain():
                 yield
+        # iter each expression, keeping step with domain value 'difficulties'
+        # to this end, iter_domain implementations can yield a 'difficulty' value, None meaning 'trivial'
+        # ??? we will cache the domains here, on the stack
+        #e_v, f_v = None, None
+        #while True:
+        #    for e_v in self.e.iter_domain():
+        #        if e_v is not None and (f_v is None or e_v > f_v):
+        #            break
 
     def is_free(self):
         return self.e.is_free() or self.f.is_free()
