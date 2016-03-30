@@ -33,6 +33,7 @@
 # 5. Is shorting inside the iter_domain() loop correct?
 
 #FIXME negative expression handling not currently very sensible
+#FIXME __repr__ for negative expressions
 
 import inspect
 from collections import OrderedDict
