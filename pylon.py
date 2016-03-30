@@ -14,16 +14,11 @@
 # So a predicate impl will have to indicate what it's capable of doing, and some sort of score for how efficiently
 # it can do it.
 
-# A Predicate has to implement 3 iterators,
-# for it will be asked, in order:
-# [ 1. iterate your true/false (concrete) facts ]
-#   2. iterate your domain
-#   3. fine, you can't do either of those, so evaluate P(x1), P(x2), ..
-# For example a Predicate with Real domain might not be able to do 1 or 2, just 3 by evaluating
-# for example x > y
-
-# IsAWord predicate does (1), (2) inefficiently but is ok at (3)
-# x > y doesn't do (1), (2) at all but does (3)
+# A Predicate has to implement 2 iterators:
+#   1. iterate your true/false (concrete) facts
+#   2. evaluate P(x1), P(x2), ..
+# For example a Predicate with Real domain might not be able to do (1), only (2) so for example, x > y
+# (1), if used, happens before (2)
 
 # TODO:
 #
@@ -37,6 +32,7 @@
 # 4. Global value cache (rather than per-expression) that you can then control (maybe)
 # 5. Is shorting inside the iter_domain() loop correct?
 
+#FIXME negative expression handling not currently very sensible
 
 import inspect
 from collections import OrderedDict
@@ -163,17 +159,20 @@ class Expr:
     """
 
     def __init__(self, name=None):
+        self.negative = False
+        # these are for diagnostics:
         self.collector = None
         self.name = name
 
     def __invert__(self):
-        return NegExpr(self)
+        self.negative = not self.negative
+        return self
 
     def __and__(self, f):
-        return AndExpr(self, f)
+        return BinaryExpr(True, self, f)
 
     def __or__(self, f):
-        return OrExpr(self, f)
+        return BinaryExpr(False, self, f)
 
     def __bool__(self):
         return self.eval()
@@ -232,7 +231,7 @@ class PredicateExpr (Expr):
             self.values[z] = v
         if self.collector is not None:
             self.collector.eval(self, z, v, cached)
-        return v
+        return self.negative ^ v
 
     def iter_domain(self):
         f = tuple(x for x in self.fact if isinstance(x, Variable) and x.is_free())
@@ -251,47 +250,11 @@ class PredicateExpr (Expr):
         return False
 
 
-class NegExpr (Expr):
-    """ So for example:
-    
-        >>> P = SetPredicate({ 'foo': False, 'bar': True }, name="P")
-        >>> debug(Exists(lambda x: ~P(x), name="E"))
-        ([bar]) in P
-        P(bar) = True
-        ([foo]) in P
-        P(foo) = False
-        E => ('foo',)
-        Evaluates to True
-    """
-
-    def __init__(self, e):
-        super().__init__()
-        self.e = e
-
-    def eval(self):
-        return not self.e.eval()
-
-    def iter_domain(self):
-        for _ in self.e.iter_domain():
-            yield
-
-    def collect(self, collector):
-        super().collect(collector)
-        self.e.collect(collector)
-
-    def is_free(self):
-        return self.e.is_free()
-
-    def __repr__(self):
-        if self.e.name is not None:
-            return "~{0}".format(self.e.name)
-        return super().__repr__()
-
-
 class BinaryExpr (Expr):
 
-    def __init__(self, e, f):
+    def __init__(self, op, e, f):
         super().__init__()
+        self.op = op # True for AND, False for OR
         self.e = e
         self.f = f
 
@@ -335,36 +298,27 @@ class BinaryExpr (Expr):
     def is_free(self):
         return self.e.is_free() or self.f.is_free()
 
+    def eval(self):
+        if self.op:
+            return self.e.eval() and self.f.eval() # we should check for 'difficulty' here
+        else:
+            return self.e.eval() or self.f.eval() # we should check for 'difficulty' here
+
+    def short(self, v):
+        return self.op ^ v
+
+    def __invert__(self):
+        self.negative = not self.negative # actually, this is ignored
+        # operate De Morgan's law
+        self.op = not self.op
+        self.e = ~self.e
+        self.f = ~self.f
+        return self
+
     def collect(self, collector):
         super().collect(collector)
         self.e.collect(collector)
         self.f.collect(collector)
-
-
-class AndExpr (BinaryExpr):
-
-    def __init__(self, e, f):
-        BinaryExpr.__init__(self, e, f)
-
-    def short(self, v):
-        #FIXME will need more information that just v if we are to start asking for difficulties and changing the order...
-        return not v
-
-    def eval(self):
-        return self.e.eval() and self.f.eval() # we should check for 'difficulty' here
-
-
-class OrExpr (BinaryExpr):
-
-    def __init__(self, e, f):
-        BinaryExpr.__init__(self, e, f)
-
-    def short(self, v):
-        #FIXME will need more information that just v if we are to start asking for difficulties and changing the order...
-        return v
-
-    def eval(self):
-        return self.e.eval() or self.f.eval() # we should check for 'difficulty' here
 
 
 class Rule:
@@ -378,12 +332,18 @@ class Rule:
         >>> bool(R(1) | R(2))
         True
         >>> S = Rule(lambda x, y: Q(x, y) | Q(y, x))
+        >>> bool(S(1, 2))
+        True
         >>> bool(S(2, 1))
+        True
+        >>> bool(S(2, 1) & S(1, 2))
         True
         >>> bool(S(3, 4))
         Traceback (most recent call last):
          ...
         DomainError: (4, 3) is not in the domain
+        >>> bool(~S(1, 2))
+        False
     """
 
     def __init__(self, f):
@@ -400,7 +360,7 @@ class RuleExpr (Expr):
         self.expr = expr
 
     def eval(self):
-        return self.expr.eval()
+        return self.negative ^ self.expr.eval()
 
     def iter_domain(self):
         return
@@ -472,8 +432,10 @@ class Quantifier (Expr):
     def eval(self):
         z = tuple(x() if isinstance(x, Variable) else x for x in self.fact)
         if z in self.values:
-            return self.values[z]
-        return self._eval()
+            v = self.values[z]
+        else:
+            v = self._eval()
+        return self.negative ^ v
 
     def _eval(self):
         v = not self.op
