@@ -35,6 +35,19 @@
 #FIXME negative expression handling not currently very sensible
 #FIXME __repr__ for negative expressions
 
+# 'weights' motivating example:
+# Exists(lambda x: P(x) | Q(x) | R(x))
+# want to 'explore' P(x) until it gets weak, then try Q, R for a bit until they get weaker, go back to P, etc.
+#
+# Exists(lambda x, y: (P(x) | Q(y)) & F(x, y)) needs to ensure Q.iter() is called even for True values of P(.)
+# To do this one, the BinaryExpr has to cope with BOTH halves going Nope and must then "re-ask" (because the Nope of the LHS was a lazy nope) (well it probably goes back up to the Quantifier?) (WAIT - this simply ties back in to the 'weight'/'score' approach?)
+
+# empty domains example(s)
+# Exists(lambda x: P(x)) when P has no domain is False (as it should be)
+# Exists(lambda x, y: P(x) | Q(y)) when Q has no domain?
+# <=> Exists(lambda x: Exists(lambda y: P(x) | Q(y)))
+# inner predicate is like Exists(lambda y: True | Q(y)) so always True
+
 import inspect
 from collections import OrderedDict
 
@@ -163,7 +176,9 @@ class Expr:
     """
 
     def __init__(self, name=None):
+        self.parent = None
         self.negative = False
+        self._no_free = False
         # these are for diagnostics:
         self.collector = None
         self.name = name
@@ -244,6 +259,13 @@ class PredicateExpr (Expr):
 
     def iter(self):
         f = set(x for x in self.fact if isinstance(x, Variable) and x.is_free())
+
+        if len(f) == 0:
+            # fact is concrete, so don't ask to iter values - wait until the eval
+            # (because below if you yield concrete facts then we don't call eval)
+            yield
+            return
+
         for ok in self.p.iter(self.fact, not self.negative): #FIXME rename
             if ok:
                 for x in f: #FIXME this logic not quite right? need no free vbles in ANY yielded fact?
@@ -264,6 +286,10 @@ class PredicateExpr (Expr):
         return False
 
 
+class FreeException (Exception):
+    pass
+
+
 class BinaryExpr (Expr):
 
     def __init__(self, op, e, f):
@@ -271,11 +297,20 @@ class BinaryExpr (Expr):
         self.op = op # True for AND, False for OR
         self.e = e
         self.f = f
+        self.e.parent = self
+        self.f.parent = self
+
+    def no_free(self):
+        #FIXME this is a very simplified version of what is needed. no_free ought to be a set of 'no free allowed' variables, inherited from parent expressions up the tree back to the root. There might be more 'capability/requirement' style stuff needed, but perhaps not here
+        e = self
+        while e is not None:
+            if e._no_free:
+                return True
+            e = e.parent
+        return False
 
     def iter(self):
-        """ Short circuiting.
-        
-            >>> P = SetPredicate({'foo': True, 'bar': False}, name="P")
+        """ >>> P = SetPredicate({'foo': True, 'bar': False}, name="P")
             >>> Q = SetPredicate({'A': True, 'B': True}, name="Q")
             >>> debug(Exists(lambda x, y: P(x) & Q(y), name="E"))
             .. P([foo]) = True
@@ -286,11 +321,53 @@ class BinaryExpr (Expr):
             P & Q = True
             E => ('foo', 'B')
             Evaluates to True
+            
+            >>> P = SetPredicate({ 1: True, 6: True}, name="P")
+            >>> Q = SetPredicate({ 4: True, 9: True}, name="Q")
+            >>> F = FnPredicate(lambda x, y: x < y, name="F")
+            >>> debug(Exists(lambda x, y: (P(x) | Q(y)) & F(x, y), name="E"))
+            .. P([1]) = True
+            .. F([1],[]) = True
+            P | Q = True
+            .. Q([4]) = True
+            P | Q = True
+            F(1,4) = True
+            P | Q & F = True
+            E => (1, 4)
+            .. Q([9]) = True
+            P | Q = True
+            F(1,9) = True
+            P | Q & F = True
+            E => (1, 9)
+            .. P([6]) = True
+            .. Q([4]) = True
+            P | Q = True
+            F(6,4) = False
+            P | Q & F = False
+            .. Q([9]) = True
+            P | Q = True
+            F(6,9) = True
+            P | Q & F = True
+            E => (6, 9)
+            Evaluates to True
         """
         #FIXME should choose the order based on difficulties and cope with NOPE
-        for _ in self.e.iter():
-            for __ in self.f.iter():
-                yield
+        if self.op:
+            for _ in self.e.iter():
+                for __ in self.f.iter():
+                    yield
+        else:
+            for _ in self.e.iter():
+                if not self.no_free():
+                    yield
+                if self.no_free():
+                    for __ in self.f.iter():
+                        yield
+
+            if not self.no_free():
+                for _ in self.f.iter():
+                    yield
+
         # iter each expression, keeping step with domain value 'difficulties'
         # to this end, iter_domain implementations can yield a 'difficulty' value, None meaning 'trivial'
         # ??? we will cache the domains here, on the stack
@@ -304,10 +381,24 @@ class BinaryExpr (Expr):
         return self.e.is_free() or self.f.is_free()
 
     def eval(self):
+        try:
+            x = self.e.eval()
+
+            # short
+            if self.op or not x:
+                y = self.f.eval()
+        except (FreeException, DomainError) as e:
+            raise
+        except: #FIXME Except what?? everything else... can be tighter?
+            if not self.no_free():
+                self._no_free = True
+                raise FreeException()
+            # so first time, raise FreeException, second time, it's game over
+            raise
         if self.op:
-            v = self.e.eval() and self.f.eval() # we should check for 'difficulty' here
+            v = x and y
         else:
-            v = self.e.eval() or self.f.eval() # we should check for 'difficulty' here
+            v = x or y
         if self.collector is not None:
             self.collector.evals(self, v)
         return v # remember we applied De Morgan
@@ -428,6 +519,7 @@ class Quantifier (Expr):
         super().__init__()
         self.fact = tuple(Variable() for _ in range(len(inspect.getargspec(f).args)))
         self.expr = f(*self.fact)
+        self.expr.parent = self
         self.op = op
         self.values = {}
         self.name = name
@@ -453,12 +545,16 @@ class Quantifier (Expr):
         if not self.op:
             e = ~e
         for _ in e.iter():
-            if e.eval():
-                z = tuple(x() if isinstance(x, Variable) else x for x in self.fact)
-                self.values[z] = self.op
-                if self.collector is not None:
-                    self.collector.quantifier_value(self, z)
-                yield z
+            try:
+                v = e.eval()
+                if v is not None and v: #FIXME simplify!! check None still used as a return value
+                    z = tuple(x() if isinstance(x, Variable) else x for x in self.fact)
+                    self.values[z] = self.op
+                    if self.collector is not None:
+                        self.collector.quantifier_value(self, z)
+                    yield z
+            except FreeException:
+                pass #FIXME Or, we could do the 'second time and your dead' logic here? put 'cause' in the FreeException
 
     def collect(self, collector):
         super().collect(collector)
@@ -506,23 +602,22 @@ class Exists (Quantifier):
 
         >>> debug(Exists(lambda x, y: Q(x, y) & Q(y, x), name="E")) #FIMXE is caching working as expected, below? Yes, cos it's by expr
         .. Q([1],[1]) = True
-        .. Q([1],[1]) = True
+        Q(1,1) = True
         Q & Q = True
         E => (1, 1)
         .. Q([1],[2]) = True
-        .. Q([2],[1]) = True
+        Q(2,1) = True
         Q & Q = True
         E => (1, 2)
         .. Q([2],[1]) = True
-        .. Q([1],[2]) = True
+        Q(1,2) = True
         Q & Q = True
         E => (2, 1)
         .. Q([2],[2]) = True
-        .. Q([2],[2]) = True
+        Q(2,2) = True
         Q & Q = True
         E => (2, 2)
         Evaluates to True
-
         >>> bool(Exists(lambda x: ~Q(9, x)))
         False
 
